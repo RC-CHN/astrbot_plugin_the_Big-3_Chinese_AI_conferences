@@ -151,7 +151,7 @@ class DailyReportPlugin(Star):
                 yield event.image_result(str(self.output_image_path))
                 return
 
-        yield event.plain_result("严肃学习中，请稍候...")
+        yield event.plain_result("严肃学习中，少话...")
 
         # 1. 获取新刊号
         issue_number = self._get_and_update_issue_number()

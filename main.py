@@ -17,7 +17,7 @@ from .src.jiqizhixin import extract as jiqizhixin_extract
 from .src.qbitai import extract as qbitai_extract
 
 
-@register("daily_report", "Roo", "生成AI日报", "1.0.0")
+@register("astrbot_plugin_the_Big-3_Chinese_AI_conferences", "RC-CHN", "亿万人将要精读中文AI顶会", "v1.0")
 class DailyReportPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

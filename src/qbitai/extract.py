@@ -1,4 +1,3 @@
-import requests
 import json
 import os
 from datetime import datetime, timedelta
@@ -6,9 +5,10 @@ import feedparser
 from playwright.async_api import async_playwright
 import trafilatura
 import asyncio
+from astrbot.api import logger
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
-CACHE_FILE = os.path.join(CACHE_DIR, 'articles.json')
+CACHE_DIR = None
+CACHE_FILE = None
 CACHE_DURATION = timedelta(hours=3)
 
 async def get_full_content(url, semaphore):
@@ -30,7 +30,7 @@ async def get_full_content(url, semaphore):
             content = trafilatura.extract(html)
             return content if content else ""
         except Exception as e:
-            print(f"  - 抓取内容失败: {url}, 错误: {e}")
+            logger.error(f"QbitAI: 抓取内容失败: {url}", exc_info=e)
             return ""
 
 async def fetch_latest_articles(limit=10, semaphore=None):
@@ -53,54 +53,47 @@ async def fetch_latest_articles(limit=10, semaphore=None):
             
             last_fetched_time = datetime.fromisoformat(cached_data.get('timestamp'))
             if datetime.now() - last_fetched_time < CACHE_DURATION:
-                print("Fetching articles from cache.")
+                logger.info("QbitAI: 从缓存加载文章。")
                 return cached_data.get('articles', [])[:limit]
         except (json.JSONDecodeError, KeyError, FileNotFoundError):
             pass
 
-    print("Fetching articles from network.")
+    logger.info("QbitAI: 从网络抓取文章。")
     
     articles = []
     
-    # Use RSS feed
-    rss_url = "https://www.qbitai.com/feed/"
-    feed = feedparser.parse(rss_url)
-    
-    tasks = []
-    for entry in feed.entries[:limit]:
-        url = entry.link
-        title = entry.title
-        print(f"  - 正在准备抓取: {title}")
-        task = asyncio.create_task(get_full_content(url, semaphore))
-        articles.append({
-            "title": title,
-            "url": url,
-            "task": task
-        })
+    try:
+        # Use RSS feed
+        rss_url = "https://www.qbitai.com/feed/"
+        feed = feedparser.parse(rss_url)
+        
+        tasks = []
+        for entry in feed.entries[:limit]:
+            url = entry.link
+            title = entry.title
+            logger.info(f"QbitAI: 正在准备抓取: {title}")
+            task = asyncio.create_task(get_full_content(url, semaphore))
+            articles.append({
+                "title": title,
+                "url": url,
+                "task": task
+            })
 
-    # 并发执行所有抓取任务
-    contents = await asyncio.gather(*(article.pop("task") for article in articles))
+        # 并发执行所有抓取任务
+        contents = await asyncio.gather(*(article.pop("task") for article in articles))
 
-    # 将结果填充回文章列表
-    for i, article in enumerate(articles):
-        article["content"] = contents[i]
-    
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-        cache_content = {
-            'timestamp': datetime.now().isoformat(),
-            'articles': articles
-        }
-        json.dump(cache_content, f, ensure_ascii=False, indent=4)
+        # 将结果填充回文章列表
+        for i, article in enumerate(articles):
+            article["content"] = contents[i]
+        
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            cache_content = {
+                'timestamp': datetime.now().isoformat(),
+                'articles': articles
+            }
+            json.dump(cache_content, f, ensure_ascii=False, indent=4)
 
-    return articles[:limit]
-
-if __name__ == '__main__':
-    async def main_async():
-        latest_articles = await fetch_latest_articles()
-        if latest_articles:
-            print(f"Successfully fetched {len(latest_articles)} articles.")
-            print(f"First article: {latest_articles[0]['title']}")
-            print(f"URL: {latest_articles[0]['url']}")
-        else:
-            print("No articles found.")
-    asyncio.run(main_async())
+        return articles[:limit]
+    except Exception as e:
+        logger.error(f"QbitAI: 抓取RSS源或处理文章时失败", exc_info=e)
+        return []

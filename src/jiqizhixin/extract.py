@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 import trafilatura
 import asyncio
-import requests
+from astrbot.api import logger
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
-CACHE_FILE = os.path.join(CACHE_DIR, 'articles.json')
+CACHE_DIR = None
+CACHE_FILE = None
 CACHE_DURATION = timedelta(hours=3)
 
 async def get_full_content(url, semaphore):
@@ -30,7 +30,7 @@ async def get_full_content(url, semaphore):
             content = trafilatura.extract(html)
             return content if content else ""
         except Exception as e:
-            print(f"  - 抓取内容失败: {url}, 错误: {e}")
+            logger.error(f"Jiqizhixin: 抓取内容失败: {url}", exc_info=e)
             return ""
 
 async def fetch_latest_articles(limit=10, semaphore=None):
@@ -53,13 +53,13 @@ async def fetch_latest_articles(limit=10, semaphore=None):
             
             last_fetched_time = datetime.fromisoformat(cached_data.get('timestamp'))
             if datetime.now() - last_fetched_time < CACHE_DURATION:
-                print("Fetching articles from cache.")
+                logger.info("Jiqizhixin: 从缓存加载文章。")
                 return cached_data.get('articles', [])[:limit]
         except (json.JSONDecodeError, KeyError, FileNotFoundError):
             # Invalid cache, proceed to fetch from network
             pass
 
-    print("Fetching articles from network.")
+    logger.info("Jiqizhixin: 从网络抓取文章。")
     url = "https://www.jiqizhixin.com/api/v4/articles.json?sort=time"
     try:
         response = requests.get(url)
@@ -75,7 +75,7 @@ async def fetch_latest_articles(limit=10, semaphore=None):
             title = article.get("title", "")
             slug = article.get("slug", "")
             url = f"https://www.jiqizhixin.com/articles/{slug}"
-            print(f"  - 正在准备抓取: {title}")
+            logger.info(f"Jiqizhixin: 正在准备抓取: {title}")
             task = asyncio.create_task(get_full_content(url, semaphore))
             formatted_articles.append({
                 "title": title,
@@ -99,18 +99,8 @@ async def fetch_latest_articles(limit=10, semaphore=None):
 
         return formatted_articles[:limit]
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching articles: {e}")
+        logger.error(f"Jiqizhixin: 抓取文章列表失败", exc_info=e)
         return []
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
+        logger.error(f"Jiqizhixin: 解析JSON失败", exc_info=e)
         return []
-
-if __name__ == '__main__':
-    async def main_async():
-        latest_articles = await fetch_latest_articles()
-        if latest_articles:
-            print(f"Successfully fetched {len(latest_articles)} articles.")
-            # Print the title of the first article for a quick check
-            if latest_articles:
-                print(f"First article title: {latest_articles[0].get('title')}")
-    asyncio.run(main_async())

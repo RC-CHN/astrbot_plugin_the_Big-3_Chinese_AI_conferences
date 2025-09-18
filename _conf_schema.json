@@ -1,11 +1,4 @@
 {
-    "tavily_api_keys": {
-        "description": "tavily 密钥列表",
-        "type": "list",
-        "hint": "支持自动轮询",
-        "default": ["tavily_API_Key_1", "tavily_API_Key_2"],
-        "obvious_hint": true
-    },
     "summary_provider": {
         "description": "总结及处理使用的llm供应商名称",
         "type": "string",

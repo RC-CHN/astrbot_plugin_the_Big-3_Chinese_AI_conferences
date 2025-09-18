@@ -1,0 +1,4 @@
+playwright
+trafilatura
+requests
+feedparser

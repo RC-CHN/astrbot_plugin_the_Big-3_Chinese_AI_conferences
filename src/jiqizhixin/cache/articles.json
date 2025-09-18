@@ -1,0 +1,105 @@
+{
+    "timestamp": "2025-09-18T09:58:58.601267",
+    "articles": [
+        {
+            "title": "没想到，音频大模型开源最彻底的，居然是小红书",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-10"
+        },
+        {
+            "title": "6.1B打平40B Dense模型，蚂蚁开源最新MoE模型Ling-flash-2.0",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-9"
+        },
+        {
+            "title": "「AI助手」真来了？谷歌牵头推进Agent支付协议AP2",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-8"
+        },
+        {
+            "title": "腾讯AI Lab首创RL框架Parallel-R1，教大模型学会「并行思维」",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-7"
+        },
+        {
+            "title": "阿里开源通义DeepResearch，性能超OpenAI、DeepSeek旗舰模型",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-6"
+        },
+        {
+            "title": "华为发布4+10+N中小企业智能化方案，打通迈向智能世界「最后一公里」",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-5"
+        },
+        {
+            "title": "LLM开源2.0大洗牌：60个出局，39个上桌，AI Coding疯魔，TensorFlow已死",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-4"
+        },
+        {
+            "title": "Cell丨谷歌AI co-scientist联合帝国理工揭开谜团：提出并验证细菌基因转移机制假说",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-3"
+        },
+        {
+            "title": "刚刚，李飞飞空间智能新成果震撼问世！3D世界生成进入「无限探索」时代",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17-2"
+        },
+        {
+            "title": "突破单链思考上限，清华团队提出原生「并行思考」scale范式",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-17"
+        },
+        {
+            "title": "高阶程序，让AI从技术可行到商业可信的最后一公里",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-13"
+        },
+        {
+            "title": "网络顶会获奖！华为提出端网协同RDMA传输架构，解决大规模AI集群网络可扩展性问题",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-12"
+        },
+        {
+            "title": "具身智能能力狂飙，安全却严重滞后？首个安全可信EAI框架与路线图出炉！",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-11"
+        },
+        {
+            "title": "火山引擎发布PromptPilot，推动大模型应用高效落地",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-10"
+        },
+        {
+            "title": "在「外滩大会·具身智能：从泛化到行动，重塑产业未来」上，这些大牛都说了什么？",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-9"
+        },
+        {
+            "title": "国内首个！夸克公开覆盖全阶段医师考试的健康大模型测试集",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-8"
+        },
+        {
+            "title": "Kiro 发布智能代理与全新定价，助力开发者高效构建 AI 应用",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-7"
+        },
+        {
+            "title": "蚂蚁百灵开源轻量级MoE语言模型Ling-mini-2.0，1.4B激活性能比肩大规模模型",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-6"
+        },
+        {
+            "title": "浙大侯廷军团队联合IIT等发布系统综述：全景解析机器学习加持下的「增强采样」方法",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-5"
+        },
+        {
+            "title": "谁说Scaling Law到头了？新研究：每一步的微小提升会带来指数级增长",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-4"
+        },
+        {
+            "title": "从少样本到千样本！MachineLearningLM给大模型上下文学习装上「机器学习引擎」",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-3"
+        },
+        {
+            "title": "刚刚，OpenAI发布GPT-5-Codex：可独立工作超7小时，还能审查、重构大型项目",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16-2"
+        },
+        {
+            "title": "多模态BUG修复新SOTA：慕尼黑工大GUIRepair登上SWE-bench Multimodal榜单第一",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-16"
+        },
+        {
+            "title": "法天使与零一万物发布法务智能体平台，让AI成为法务部的超级员工",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-15-21"
+        },
+        {
+            "title": "从「对口型」到「会表演」，刚进化的可灵AI数字人，技术公开了",
+            "url": "https://www.jiqizhixin.com/articles/2025-09-15-7"
+        }
+    ]
+}

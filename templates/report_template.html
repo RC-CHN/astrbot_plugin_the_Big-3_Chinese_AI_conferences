@@ -46,15 +46,27 @@
             column-gap: 20px;
             column-rule: 1px solid #eee;
         }
+        .featured-section {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #333;
+        }
         .article {
             break-inside: avoid-column;
             padding-bottom: 15px;
             margin-bottom: 15px;
             border-bottom: 1px solid #eee;
         }
+        .article.featured {
+            border-bottom: none;
+        }
         .article h2 {
             font-size: 1.2em;
             margin: 0 0 5px 0;
+        }
+        .article.featured h2 {
+            font-size: 1.8em;
+            font-weight: bold;
         }
         .article a {
             color: #333;
@@ -67,6 +79,12 @@
             font-size: 0.8em;
             color: #888;
             font-style: italic;
+            margin-bottom: 10px;
+        }
+        .article .summary {
+            font-size: 0.9em;
+            color: #555;
+            line-height: 1.4;
         }
         @media (max-width: 768px) {
             .content {
@@ -94,8 +112,11 @@
             <span>{date}</span>
             <span>{weather}</span>
         </div>
+        <div class="featured-section">
+            {featured_articles}
+        </div>
         <main class="content">
-            {articles}
+            {regular_articles}
         </main>
     </div>
 </body>

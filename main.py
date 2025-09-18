@@ -28,7 +28,7 @@ class DailyReportPlugin(Star):
         self.plugin_data_dir: Path = StarTools.get_data_dir()
         self.report_meta_path = self.plugin_data_dir / "report_meta.json"
         self.output_html_path = self.plugin_data_dir / "daily_report.html"
-        self.output_image_path = self.plugin_data_dir / "daily_report.png"
+        self.output_image_path = self.plugin_data_dir / "daily_report.jpeg"
         
         # 将提取器缓存也移到插件数据目录
         aiera_extract.CACHE_DIR = str(self.plugin_data_dir / "aiera_cache")
@@ -44,6 +44,14 @@ class DailyReportPlugin(Star):
         self.max_fetch_concurrency = 3
         self.max_llm_concurrency = 5
         self.report_cache_duration = timedelta(hours=3)
+        self.WEATHERS = [
+            ("Network Congestion", "⦙"),
+            ("Cosmic Ray Interference", "☄"),
+            ("Data Stream Fluctuation", "〰"),
+            ("Server Maintenance", "⚙"),
+            ("AI in Deep Thought", "⌬"),
+            ("Quantum Entanglement", "⌬")
+        ]
 
     async def initialize(self):
         """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
@@ -132,55 +140,6 @@ class DailyReportPlugin(Star):
                 logger.error(f"解析 {article_path} 出错")
         return all_articles
 
-    def _generate_html(self, featured_articles, regular_articles, issue_number):
-        # 模板路径仍然相对于当前文件
-        template_path = os.path.join(os.path.dirname(__file__), "templates", "report_template.html")
-        try:
-            with open(template_path, "r", encoding="utf-8") as f:
-                template = f.read()
-        except FileNotFoundError:
-            logger.error(f"未找到HTML模板: {template_path}")
-            return "<html><body><h1>错误：未找到HTML模板</h1></body></html>"
-
-        featured_html = ""
-        for article in featured_articles:
-            title = article.get('title', '无标题')
-            url = article.get('url', '#')
-            source = article.get('source', '未知来源')
-            summary = article.get('summary', '暂无摘要')
-            featured_html += f'''
-            <div class="article featured">
-                <h2><a href="{url}" target="_blank">{title}</a></h2>
-                <p class="source">来源: {source.capitalize()}</p>
-                <p class="summary">{summary}</p>
-            </div>
-            '''
-
-        regular_html = ""
-        for article in regular_articles:
-            title = article.get('title', '无标题')
-            url = article.get('url', '#')
-            source = article.get('source', '未知来源')
-            summary = article.get('summary', '暂无摘要')
-            regular_html += f'''
-            <div class="article">
-                <h2><a href="{url}" target="_blank">{title}</a></h2>
-                <p class="source">来源: {source.capitalize()}</p>
-                <p class="summary">{summary}</p>
-            </div>
-            '''
-        
-        today = datetime.now().strftime("%A, %B %d, %Y")
-        weather = "Heavy Network Traffic" # 修改天气文案
-
-        html_content = template.replace("{featured_articles}", featured_html)
-        html_content = html_content.replace("{regular_articles}", regular_html)
-        html_content = html_content.replace("{date}", today)
-        html_content = html_content.replace("{weather}", weather)
-        html_content = html_content.replace("{issue_number}", str(issue_number))
-
-        return html_content
-
     @filter.command("generate_report")
     async def generate_report_command(self, event: AstrMessageEvent):
         """生成AI日报"""
@@ -192,7 +151,7 @@ class DailyReportPlugin(Star):
                 yield event.image_result(str(self.output_image_path))
                 return
 
-        yield event.plain_result("开始生成新的AI日报，请稍候...")
+        yield event.plain_result("严肃学习中，请稍候...")
 
         # 1. 获取新刊号
         issue_number = self._get_and_update_issue_number()
@@ -203,7 +162,7 @@ class DailyReportPlugin(Star):
         # 3. 从缓存加载文章
         articles = self._load_articles()
         if not articles:
-            yield event.plain_result("没有找到任何文章来生成日报。")
+            yield event.plain_result("学习失败，已严肃反思")
             return
 
         # 4. 随机选择10篇文章
@@ -226,21 +185,28 @@ class DailyReportPlugin(Star):
                  logger.info(f"已总结: {article['title']}")
         logger.info("--- 摘要生成完毕 ---")
 
-        # 6. 生成HTML报告
-        featured_articles = selected_articles[:2]
-        regular_articles = selected_articles[2:]
-        html_content = self._generate_html(featured_articles, regular_articles, issue_number)
+        # 6. 准备渲染数据
+        weather_text, weather_icon = random.choice(self.WEATHERS)
+        render_data = {
+            "featured_articles": selected_articles[:2],
+            "regular_articles": selected_articles[2:],
+            "issue_number": issue_number,
+            "date": datetime.now().strftime("%A, %B %d, %Y"),
+            "weather_text": weather_text,
+            "weather_icon": weather_icon
+        }
         
-        with open(self.output_html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        logger.info(f"已保存最新HTML实例到: {self.output_html_path}")
-
+        # 7. 渲染HTML为图片
+        template_path = os.path.join(os.path.dirname(__file__), "templates", "report_template.html")
         try:
+            with open(template_path, "r", encoding="utf-8") as f:
+                template_content = f.read()
+
             image_path = await self.html_render(
-                tmpl=str(self.output_html_path),
-                data={},
+                tmpl=template_content,
+                data=render_data,
                 return_url=False,
-                options={"type": "png", "full_page": True, "quality": 90}
+                options={"type": "jpeg", "full_page": True, "quality": 90}
             )
             # 将渲染好的图片移动到我们的数据目录以作为缓存
             if os.path.exists(self.output_image_path):
@@ -248,11 +214,12 @@ class DailyReportPlugin(Star):
             os.rename(image_path, self.output_image_path)
 
             yield event.image_result(str(self.output_image_path))
+            yield event.plain_result("已严肃学习")
             logger.info(f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}")
 
         except Exception as e:
             logger.error(f"渲染日报图片时出错: {e}", exc_info=True)
-            yield event.plain_result("生成日报图片时出错，请检查后台日志。")
+            yield event.plain_result("渲染失败，已严肃反思")
 
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""

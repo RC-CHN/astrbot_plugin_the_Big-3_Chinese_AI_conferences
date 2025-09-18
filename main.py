@@ -140,7 +140,7 @@ class DailyReportPlugin(Star):
                 logger.error(f"解析 {article_path} 出错")
         return all_articles
 
-    @filter.command("generate_report")
+    @filter.command("今日顶会")
     async def generate_report_command(self, event: AstrMessageEvent):
         """生成AI日报"""
         # 检查报告缓存

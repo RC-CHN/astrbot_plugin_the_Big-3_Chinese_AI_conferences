@@ -1,19 +1,18 @@
-import requests
+import httpx
 import json
-import os
 from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 import trafilatura
 import asyncio
 from astrbot.api import logger
+from pathlib import Path
 
-CACHE_DIR = None
-CACHE_FILE = None
 CACHE_DURATION = timedelta(hours=3)
 
-async def get_full_content(url, semaphore):
+async def get_full_content(url: str, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
     """使用Playwright和Trafilatura获取文章全文，并使用信号量控制并发。"""
     async with semaphore:
+        browser = None
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
@@ -22,33 +21,33 @@ async def get_full_content(url, semaphore):
                 )
                 page = await context.new_page()
                 await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                # 等待2秒让动态内容加载
                 await page.wait_for_timeout(2000)
                 html = await page.content()
-                await browser.close()
             
-            content = trafilatura.extract(html)
+            content = await loop.run_in_executor(None, trafilatura.extract, html)
             return content if content else ""
         except Exception as e:
             logger.error(f"Jiqizhixin: 抓取内容失败: {url}", exc_info=e)
             return ""
+        finally:
+            if browser:
+                await browser.close()
 
-async def fetch_latest_articles(limit=10, semaphore=None):
+async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = None, cache_dir: Path = None) -> list:
     """
     Fetches the latest articles from Jiqizhixin, using a cache to avoid redundant requests.
-
-    Args:
-        limit (int): The number of articles to fetch.
-
-    Returns:
-        list: A list of the latest articles.
     """
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR)
+    if not cache_dir:
+        raise ValueError("cache_dir must be provided.")
+    
+    cache_file = cache_dir / "articles.json"
 
-    if os.path.exists(CACHE_FILE):
+    if not cache_dir.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if cache_file.exists():
         try:
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+            with open(cache_file, 'r', encoding='utf-8') as f:
                 cached_data = json.load(f)
             
             last_fetched_time = datetime.fromisoformat(cached_data.get('timestamp'))
@@ -56,41 +55,39 @@ async def fetch_latest_articles(limit=10, semaphore=None):
                 logger.info("Jiqizhixin: 从缓存加载文章。")
                 return cached_data.get('articles', [])[:limit]
         except (json.JSONDecodeError, KeyError, FileNotFoundError):
-            # Invalid cache, proceed to fetch from network
             pass
 
     logger.info("Jiqizhixin: 从网络抓取文章。")
     url = "https://www.jiqizhixin.com/api/v4/articles.json?sort=time"
     try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
         
         data = response.json()
-        articles = data.get("articles", [])
+        articles_data = data.get("articles", [])
         
-        # 统一数据格式为标题和URL
         formatted_articles = []
         tasks = []
-        for article in articles:
-            title = article.get("title", "")
-            slug = article.get("slug", "")
-            url = f"https://www.jiqizhixin.com/articles/{slug}"
+        loop = asyncio.get_running_loop()
+        for article_data in articles_data:
+            title = article_data.get("title", "")
+            slug = article_data.get("slug", "")
+            article_url = f"https://www.jiqizhixin.com/articles/{slug}"
             logger.info(f"Jiqizhixin: 正在准备抓取: {title}")
-            task = asyncio.create_task(get_full_content(url, semaphore))
+            task = asyncio.create_task(get_full_content(article_url, semaphore, loop))
             formatted_articles.append({
                 "title": title,
-                "url": url,
+                "url": article_url,
                 "task": task
             })
 
-        # 并发执行所有抓取任务
         contents = await asyncio.gather(*(article.pop("task") for article in formatted_articles))
 
-        # 将结果填充回文章列表
         for i, article in enumerate(formatted_articles):
             article["content"] = contents[i]
         
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+        with open(cache_file, 'w', encoding='utf-8') as f:
             cache_content = {
                 'timestamp': datetime.now().isoformat(),
                 'articles': formatted_articles
@@ -98,7 +95,7 @@ async def fetch_latest_articles(limit=10, semaphore=None):
             json.dump(cache_content, f, ensure_ascii=False, indent=4)
 
         return formatted_articles[:limit]
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         logger.error(f"Jiqizhixin: 抓取文章列表失败", exc_info=e)
         return []
     except json.JSONDecodeError as e:

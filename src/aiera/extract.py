@@ -1,18 +1,17 @@
 import json
-import os
 from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 import trafilatura
 import asyncio
 from astrbot.api import logger
+from pathlib import Path
 
-CACHE_DIR = None
-CACHE_FILE = None
 CACHE_DURATION = timedelta(hours=3)
 
-async def get_full_content(url, semaphore):
+async def get_full_content(url: str, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
     """使用Playwright和Trafilatura获取文章全文，并使用信号量控制并发。"""
     async with semaphore:
+        browser = None
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
@@ -21,33 +20,33 @@ async def get_full_content(url, semaphore):
                 )
                 page = await context.new_page()
                 await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                # 等待2秒让动态内容加载
                 await page.wait_for_timeout(2000)
                 html = await page.content()
-                await browser.close()
             
-            content = trafilatura.extract(html)
+            content = await loop.run_in_executor(None, trafilatura.extract, html)
             return content if content else ""
         except Exception as e:
             logger.error(f"AIERA: 抓取内容失败: {url}", exc_info=e)
             return ""
+        finally:
+            if browser:
+                await browser.close()
 
-async def fetch_latest_articles(limit=10, semaphore=None):
+async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = None, cache_dir: Path = None) -> list:
     """
     Fetches the latest articles from AIERA using Playwright.
-    
-    Args:
-        limit (int): The number of articles to fetch.
-        
-    Returns:
-        list: A list of articles with title, URL, and content.
     """
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR)
+    if not cache_dir:
+        raise ValueError("cache_dir must be provided.")
+        
+    cache_file = cache_dir / "articles.json"
 
-    if os.path.exists(CACHE_FILE):
+    if not cache_dir.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if cache_file.exists():
         try:
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+            with open(cache_file, 'r', encoding='utf-8') as f:
                 cached_data = json.load(f)
             
             last_fetched_time = datetime.fromisoformat(cached_data.get('timestamp'))
@@ -61,18 +60,18 @@ async def fetch_latest_articles(limit=10, semaphore=None):
     
     articles = []
     
-    # Try HTML parsing
+    browser = None
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch()
             page = await browser.new_page()
             await page.goto("https://aiera.com.cn/", wait_until='domcontentloaded')
             
-            # 使用更通用的定位器来查找文章链接
             locators = await page.locator('article a, .post-title a, .entry-title a, h2 a, h3 a').all()
             
             fetched_urls = set()
             tasks = []
+            loop = asyncio.get_running_loop()
 
             for loc in locators:
                 if len(fetched_urls) >= limit:
@@ -92,27 +91,25 @@ async def fetch_latest_articles(limit=10, semaphore=None):
                 
                 fetched_urls.add(url)
                 logger.info(f"AIERA: 正在准备抓取: {title}")
-                # 创建异步任务
-                task = asyncio.create_task(get_full_content(url, semaphore))
+                task = asyncio.create_task(get_full_content(url, semaphore, loop))
                 articles.append({
                     "title": title,
                     "url": url,
-                    "task": task  # 暂存任务
+                    "task": task
                 })
 
-            # 并发执行所有抓取任务
             contents = await asyncio.gather(*(article.pop("task") for article in articles))
             
-            # 将结果填充回文章列表
             for i, article in enumerate(articles):
                 article["content"] = contents[i]
-
-            await browser.close()
                 
     except Exception as e:
         logger.error(f"AIERA: Playwright抓取失败", exc_info=e)
+    finally:
+        if browser:
+            await browser.close()
     
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+    with open(cache_file, 'w', encoding='utf-8') as f:
         cache_content = {
             'timestamp': datetime.now().isoformat(),
             'articles': articles

@@ -3,5 +3,20 @@
         "description": "总结及处理使用的llm供应商名称",
         "type": "string",
         "default": "openai"
+    },
+    "max_fetch_concurrency": {
+        "description": "抓取文章时的最大并发数",
+        "type": "int",
+        "default": 3
+    },
+    "max_llm_concurrency": {
+        "description": "调用大模型生成摘要时的最大并发数",
+        "type": "int",
+        "default": 5
+    },
+    "llm_rpm_limit": {
+        "description": "调用大模型生成摘要时的每分钟请求数限制（RPM）。设为0表示不限制。",
+        "type": "int",
+        "default": 60
     }
 }

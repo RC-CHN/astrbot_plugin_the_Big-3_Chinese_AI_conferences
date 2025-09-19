@@ -8,20 +8,18 @@ from pathlib import Path
 
 CACHE_DURATION = timedelta(hours=3)
 
-async def get_full_content(url: str, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
-    """使用Playwright和Trafilatura获取文章全文，并使用信号量控制并发。"""
+async def get_full_content(url: str, browser, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
+    """使用共享的浏览器实例并发获取文章全文。"""
     async with semaphore:
-        browser = None
+        context = None
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch()
-                context = await browser.new_context(
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-                )
-                page = await context.new_page()
-                await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                await page.wait_for_timeout(2000)
-                html = await page.content()
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+            )
+            page = await context.new_page()
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.wait_for_timeout(2000)
+            html = await page.content()
             
             content = await loop.run_in_executor(None, trafilatura.extract, html)
             return content if content else ""
@@ -29,8 +27,8 @@ async def get_full_content(url: str, semaphore: asyncio.Semaphore, loop: asyncio
             logger.error(f"AIERA: 抓取内容失败: {url}", exc_info=e)
             return ""
         finally:
-            if browser:
-                await browser.close()
+            if context:
+                await context.close()
 
 async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = None, cache_dir: Path = None) -> list:
     """
@@ -61,53 +59,56 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
     articles = []
     
     browser = None
+    p = None
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
-            await page.goto("https://aiera.com.cn/", wait_until='domcontentloaded')
-            
-            locators = await page.locator('article a, .post-title a, .entry-title a, h2 a, h3 a').all()
-            
-            fetched_urls = set()
-            tasks = []
-            loop = asyncio.get_running_loop()
+        p = await async_playwright().start()
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.goto("https://aiera.com.cn/", wait_until='domcontentloaded')
+        
+        locators = await page.locator('article a, .post-title a, .entry-title a, h2 a, h3 a').all()
+        
+        fetched_urls = set()
+        tasks = []
+        loop = asyncio.get_running_loop()
 
-            for loc in locators:
-                if len(fetched_urls) >= limit:
-                    break
-                
-                title = (await loc.inner_text()).strip()
-                url = await loc.get_attribute('href')
-                
-                if not url or not title:
-                    continue
-
-                if not url.startswith('http'):
-                    url = f"https://aiera.com.cn{url}"
-                
-                if url in fetched_urls:
-                    continue
-                
-                fetched_urls.add(url)
-                logger.info(f"AIERA: 正在准备抓取: {title}")
-                task = asyncio.create_task(get_full_content(url, semaphore, loop))
-                articles.append({
-                    "title": title,
-                    "url": url,
-                    "task": task
-                })
-
-            contents = await asyncio.gather(*(article.pop("task") for article in articles))
+        for loc in locators:
+            if len(fetched_urls) >= limit:
+                break
             
-            for i, article in enumerate(articles):
-                article["content"] = contents[i]
-                
+            title = (await loc.inner_text()).strip()
+            url = await loc.get_attribute('href')
+            
+            if not url or not title:
+                continue
+
+            if not url.startswith('http'):
+                url = f"https://aiera.com.cn{url}"
+            
+            if url in fetched_urls:
+                continue
+            
+            fetched_urls.add(url)
+            logger.info(f"AIERA: 正在准备抓取: {title}")
+            task = asyncio.create_task(get_full_content(url, browser, semaphore, loop))
+            articles.append({
+                "title": title,
+                "url": url,
+                "task": task
+            })
+
+        contents = await asyncio.gather(*(article.pop("task") for article in articles))
+        
+        for i, article in enumerate(articles):
+            article["content"] = contents[i]
+            
     except Exception as e:
         logger.error(f"AIERA: Playwright抓取失败", exc_info=e)
     finally:
         if browser:
             await browser.close()
+        if p:
+            await p.stop()
     
     with open(cache_file, 'w', encoding='utf-8') as f:
         cache_content = {

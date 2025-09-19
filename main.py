@@ -27,6 +27,7 @@ class DailyReportPlugin(Star):
         self.plugin_data_dir: Path = StarTools.get_data_dir() 
         self.report_meta_path = self.plugin_data_dir / "report_meta.json"
         self.report_meta_lock_path = self.plugin_data_dir / "report_meta.json.lock"
+        self.generation_lock_path = self.plugin_data_dir / "generation.lock"
         self.output_image_path = self.plugin_data_dir / "daily_report.jpeg"
         
         self.extractors = {
@@ -35,8 +36,9 @@ class DailyReportPlugin(Star):
             "QbitAI": qbitai_extract
         }
         
-        self.max_fetch_concurrency = 3
-        self.max_llm_concurrency = 5
+        self.max_fetch_concurrency = self.config.get("max_fetch_concurrency", 3)
+        self.max_llm_concurrency = self.config.get("max_llm_concurrency", 5)
+        self.llm_rpm_limit = self.config.get("llm_rpm_limit", 60)
         self.report_cache_duration = timedelta(hours=3)
         self.WEATHERS = [
             ("Network Congestion", "⦙"),
@@ -90,33 +92,43 @@ class DailyReportPlugin(Star):
         await asyncio.gather(*tasks)
         logger.info("--- 数据提取完成 ---")
 
-    async def _get_summary(self, content: str) -> str:
-        """根据提供的全文内容，使用框架配置的 Provider 生成摘要。"""
-        if not content:
-            return "内容为空，无法生成摘要。"
+    async def _get_summary(self, content: str, semaphore: asyncio.Semaphore) -> str:
+        """根据提供的全文内容，使用框架配置的 Provider 生成摘要，并使用信号量控制并发。"""
+        async with semaphore:
+            if not content:
+                return "内容为空，无法生成摘要。"
 
-        provider_id = self.config.get("summary_provider")
-        if not provider_id:
-            logger.warning("摘要功能未配置，请在插件设置中指定 Provider ID。")
-            return "摘要功能未配置。"
+            provider_id = self.config.get("summary_provider")
+            if not provider_id:
+                logger.warning("摘要功能未配置，请在插件设置中指定 Provider ID。")
+                return "摘要功能未配置。"
 
-        provider = self.context.get_provider_by_id(provider_id)
-        if not provider:
-            logger.error(f"无法找到 ID 为 '{provider_id}' 的 Provider 实例。")
-            return f"无法找到 Provider '{provider_id}'。"
+            provider = self.context.get_provider_by_id(provider_id)
+            if not provider:
+                logger.error(f"无法找到 ID 为 '{provider_id}' 的 Provider 实例。")
+                return f"无法找到 Provider '{provider_id}'。"
 
-        try:
-            prompt = f"请将以下文章内容总结为一段精炼的中文摘要，直接给出摘要，不要包含任何引言或结束语,大约三十字左右。\n文章内容：\n---\n{content}\n---\n摘要："
-            llm_resp = await provider.text_chat(prompt=prompt)
-            
-            if llm_resp and llm_resp.completion_text:
-                return llm_resp.completion_text.strip()
-            else:
-                logger.warning("生成摘要时出错：模型未返回有效内容。")
-                return "生成摘要时出错：模型未返回有效内容。"
-        except Exception as e:
-            logger.error(f"调用 Provider '{provider_id}' 时出错: {e}", exc_info=True)
-            return "生成摘要时出错。"
+            try:
+                prompt = f"请将以下文章内容总结为一段精炼的中文摘要，直接给出摘要，不要包含任何引言或结束语,大约三十字左右。\n文章内容：\n---\n{content}\n---\n摘要："
+                llm_resp = await provider.text_chat(prompt=prompt)
+                
+                if llm_resp and llm_resp.completion_text:
+                    return llm_resp.completion_text.strip()
+                else:
+                    logger.warning("生成摘要时出错：模型未返回有效内容。")
+                    return "生成摘要时出错：模型未返回有效内容。"
+            except Exception as e:
+                logger.error(f"调用 Provider '{provider_id}' 时出错: {e}", exc_info=True)
+                return "生成摘要时出错。"
+
+    async def _summary_wrapper(self, article: dict, semaphore: asyncio.Semaphore):
+        """为单个文章生成摘要、附加结果并实时记录日志的包装器。"""
+        summary = await self._get_summary(article.get('content', ''), semaphore)
+        article['summary'] = summary
+        if "出错" in summary or "无法" in summary:
+            logger.warning(f"总结失败: {article['title']} - {summary}")
+        else:
+            logger.info(f"已总结: {article['title']}")
 
     def _load_articles(self):
         """从各个提取器的缓存中加载文章。"""
@@ -138,81 +150,88 @@ class DailyReportPlugin(Star):
 
     @filter.command("今日顶会")
     async def generate_report_command(self, event: AstrMessageEvent):
-        """生成AI日报"""
-        if self.output_image_path.exists():
-            last_modified_time = datetime.fromtimestamp(self.output_image_path.stat().st_mtime)
-            if datetime.now() - last_modified_time < self.report_cache_duration:
-                logger.info("报告在缓存有效期内，直接返回现有报告图片。")
-                yield event.image_result(str(self.output_image_path))
-                return
-
-        yield event.plain_result("严肃学习中，少话...")
-
-        issue_number = self._get_and_update_issue_number()
-        if issue_number == -1:
-            yield event.plain_result("无法获取报告刊号，请稍后再试。")
-            return
-
-        await self._run_extraction()
-
-        articles = self._load_articles()
-        if not articles:
-            yield event.plain_result("学习失败，已严肃反思")
-            return
-
-        random.shuffle(articles)
-        selected_articles = articles[:10]
-
-        logger.info("--- 开始生成摘要 ---")
-        summary_tasks = []
-        for article in selected_articles:
-            summary_tasks.append(self._get_summary(article.get('content', '')))
-        
-        summaries = await asyncio.gather(*summary_tasks)
-
-        for article, summary in zip(selected_articles, summaries):
-            article['summary'] = summary
-            if "出错" in summary or "无法" in summary:
-                 logger.warning(f"总结失败: {article['title']} - {summary}")
-            else:
-                 logger.info(f"已总结: {article['title']}")
-        logger.info("--- 摘要生成完毕 ---")
-
-        weather_text, weather_icon = random.choice(self.WEATHERS)
-        render_data = {
-            "featured_articles": selected_articles[:2],
-            "regular_articles": selected_articles[2:],
-            "issue_number": issue_number,
-            "date": datetime.now().strftime("%A, %B %d, %Y"),
-            "weather_text": weather_text,
-            "weather_icon": weather_icon
-        }
-        
-        template_path = Path(__file__).parent / "templates" / "report_template.html"
+        """生成AI日报，使用文件锁保护整个生成过程以防止并发执行。"""
+        generation_lock = FileLock(self.generation_lock_path, timeout=60) # 增加超时以防死锁
         try:
-            with open(template_path, "r", encoding="utf-8") as f:
-                template_content = f.read()
+            with generation_lock:
+                # 再次检查缓存，因为在等待锁的时候，可能已经有另一个实例生成了报告
+                if self.output_image_path.exists():
+                    last_modified_time = datetime.fromtimestamp(self.output_image_path.stat().st_mtime)
+                    if datetime.now() - last_modified_time < self.report_cache_duration:
+                        logger.info("报告在缓存有效期内（在获取锁后检查），直接返回现有报告图片。")
+                        yield event.image_result(str(self.output_image_path))
+                        return
 
-            image_path_str = await self.html_render(
-                tmpl=template_content,
-                data=render_data,
-                return_url=False,
-                options={"type": "jpeg", "full_page": True, "quality": 90}
-            )
-            
-            # 使用pathlib进行路径操作
-            image_path = Path(image_path_str)
-            if self.output_image_path.exists():
-                self.output_image_path.unlink()
-            image_path.rename(self.output_image_path)
+                yield event.plain_result("严肃学习中，少话...")
 
-            yield event.image_result(str(self.output_image_path))
-            yield event.plain_result("已严肃学习")
-            logger.info(f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}")
+                issue_number = self._get_and_update_issue_number()
+                if issue_number == -1:
+                    yield event.plain_result("无法获取报告刊号，请稍后再试。")
+                    return
 
-        except Exception as e:
-            logger.error(f"渲染日报图片时出错: {e}", exc_info=True)
-            yield event.plain_result("渲染失败，已严肃反思")
+                await self._run_extraction()
+
+                articles = self._load_articles()
+                if not articles:
+                    yield event.plain_result("学习失败，已严肃反思")
+                    return
+
+                random.shuffle(articles)
+                selected_articles = articles[:10]
+
+                logger.info("--- 开始生成摘要 ---")
+                llm_semaphore = asyncio.Semaphore(self.max_llm_concurrency)
+                
+                # 实现RPM速率控制
+                rpm_limit = self.llm_rpm_limit
+                delay_between_requests = 60.0 / rpm_limit if rpm_limit > 0 else 0
+
+                summary_tasks = []
+                for article in selected_articles:
+                    summary_tasks.append(asyncio.create_task(self._summary_wrapper(article, llm_semaphore)))
+                    if delay_between_requests > 0:
+                        await asyncio.sleep(delay_between_requests)
+                
+                await asyncio.gather(*summary_tasks)
+                logger.info("--- 摘要生成完毕 ---")
+
+                weather_text, weather_icon = random.choice(self.WEATHERS)
+                render_data = {
+                    "featured_articles": selected_articles[:2],
+                    "regular_articles": selected_articles[2:],
+                    "issue_number": issue_number,
+                    "date": datetime.now().strftime("%A, %B %d, %Y"),
+                    "weather_text": weather_text,
+                    "weather_icon": weather_icon
+                }
+                
+                template_path = Path(__file__).parent / "templates" / "report_template.html"
+                try:
+                    with open(template_path, "r", encoding="utf-8") as f:
+                        template_content = f.read()
+
+                    image_path_str = await self.html_render(
+                        tmpl=template_content,
+                        data=render_data,
+                        return_url=False,
+                        options={"type": "jpeg", "full_page": True, "quality": 90}
+                    )
+                    
+                    image_path = Path(image_path_str)
+                    if self.output_image_path.exists():
+                        self.output_image_path.unlink()
+                    image_path.rename(self.output_image_path)
+
+                    yield event.image_result(str(self.output_image_path))
+                    yield event.plain_result("已严肃学习")
+                    logger.info(f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}")
+
+                except Exception as e:
+                    logger.error(f"渲染日报图片时出错: {e}", exc_info=True)
+                    yield event.plain_result("渲染失败，已严肃反思")
+        except Timeout:
+            logger.warning("已有另一个报告生成任务正在进行中，本次请求已跳过。")
+            yield event.plain_result("请勿重复生成，已有任务在后台执行。")
 
     async def terminate(self):
         pass

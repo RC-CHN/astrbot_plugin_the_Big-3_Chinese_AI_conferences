@@ -9,20 +9,18 @@ from pathlib import Path
 
 CACHE_DURATION = timedelta(hours=3)
 
-async def get_full_content(url: str, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
-    """使用Playwright和Trafilatura获取文章全文，并使用信号量控制并发。"""
+async def get_full_content(url: str, browser, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
+    """使用共享的浏览器实例并发获取文章全文。"""
     async with semaphore:
-        browser = None
+        context = None
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch()
-                context = await browser.new_context(
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-                )
-                page = await context.new_page()
-                await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                await page.wait_for_timeout(2000)
-                html = await page.content()
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+            )
+            page = await context.new_page()
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.wait_for_timeout(2000)
+            html = await page.content()
             
             content = await loop.run_in_executor(None, trafilatura.extract, html)
             return content if content else ""
@@ -30,8 +28,8 @@ async def get_full_content(url: str, semaphore: asyncio.Semaphore, loop: asyncio
             logger.error(f"Jiqizhixin: 抓取内容失败: {url}", exc_info=e)
             return ""
         finally:
-            if browser:
-                await browser.close()
+            if context:
+                await context.close()
 
 async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = None, cache_dir: Path = None) -> list:
     """
@@ -59,6 +57,8 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
 
     logger.info("Jiqizhixin: 从网络抓取文章。")
     url = "https://www.jiqizhixin.com/api/v4/articles.json?sort=time"
+    p = None
+    browser = None
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
@@ -70,12 +70,16 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
         formatted_articles = []
         tasks = []
         loop = asyncio.get_running_loop()
-        for article_data in articles_data:
+        
+        p = await async_playwright().start()
+        browser = await p.chromium.launch()
+
+        for article_data in articles_data[:limit]:
             title = article_data.get("title", "")
             slug = article_data.get("slug", "")
             article_url = f"https://www.jiqizhixin.com/articles/{slug}"
             logger.info(f"Jiqizhixin: 正在准备抓取: {title}")
-            task = asyncio.create_task(get_full_content(article_url, semaphore, loop))
+            task = asyncio.create_task(get_full_content(article_url, browser, semaphore, loop))
             formatted_articles.append({
                 "title": title,
                 "url": article_url,
@@ -101,3 +105,8 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
     except json.JSONDecodeError as e:
         logger.error(f"Jiqizhixin: 解析JSON失败", exc_info=e)
         return []
+    finally:
+        if browser:
+            await browser.close()
+        if p:
+            await p.stop()

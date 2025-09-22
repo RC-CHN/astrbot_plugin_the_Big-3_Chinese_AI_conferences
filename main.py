@@ -5,7 +5,11 @@ import asyncio
 from pathlib import Path
 from filelock import FileLock, Timeout
 
-from astrbot.api.event import filter, AstrMessageEvent
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.core.message.message_event_result import MessageChain
+import astrbot.core.message.components as Comp
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.api import logger
@@ -24,15 +28,15 @@ class DailyReportPlugin(Star):
         self.context = context
         self.config = config
         
-        self.plugin_data_dir: Path = StarTools.get_data_dir() 
+        self.plugin_data_dir: Path = StarTools.get_data_dir()
         self.report_meta_path = self.plugin_data_dir / "report_meta.json"
         self.report_meta_lock_path = self.plugin_data_dir / "report_meta.json.lock"
         self.generation_lock_path = self.plugin_data_dir / "generation.lock"
         self.output_image_path = self.plugin_data_dir / "daily_report.jpeg"
         
         self.extractors = {
-            "AIERA": aiera_extract, 
-            "Jiqizhixin": jiqizhixin_extract, 
+            "AIERA": aiera_extract,
+            "Jiqizhixin": jiqizhixin_extract,
             "QbitAI": qbitai_extract
         }
         
@@ -40,6 +44,7 @@ class DailyReportPlugin(Star):
         self.max_llm_concurrency = self.config.get("max_llm_concurrency", 5)
         self.llm_rpm_limit = self.config.get("llm_rpm_limit", 60)
         self.report_cache_duration = timedelta(hours=3)
+        self.scheduler = AsyncIOScheduler(timezone=self.context.get_config().get("timezone", "Asia/Shanghai"))
         self.WEATHERS = [
             ("Network Congestion", "⦙"),
             ("Cosmic Ray Interference", "☄"),
@@ -50,7 +55,23 @@ class DailyReportPlugin(Star):
         ]
 
     async def initialize(self):
-        pass
+        """初始化插件，设置并启动定时任务。"""
+        if self.config.get("schedule_enabled"):
+            cron_expr = self.config.get("schedule_cron", "0 9 * * *")
+            targets = self.config.get("schedule_targets", [])
+            if not targets:
+                logger.warning("定时报告已启用，但未配置任何接收者 (schedule_targets)，任务不会运行。")
+                return
+
+            logger.info(f"定时报告任务已启用，Cron: '{cron_expr}'，将发送至 {len(targets)} 个目标。")
+            self.scheduler.add_job(
+                self._scheduled_report_job,
+                "cron",
+                **self._parse_cron_expr(cron_expr),
+                id="daily_report_job",
+                misfire_grace_time=300 # 5分钟宽限期
+            )
+            self.scheduler.start()
 
     def _get_and_update_issue_number(self) -> int:
         """获取并更新报告刊号，使用文件锁防止竞态条件。"""
@@ -148,50 +169,53 @@ class DailyReportPlugin(Star):
                 logger.error(f"解析 {article_path} 出错")
         return all_articles
 
-    @filter.command("今日顶会")
-    async def generate_report_command(self, event: AstrMessageEvent):
-        """生成AI日报，使用文件锁保护整个生成过程以防止并发执行。"""
-        generation_lock = FileLock(self.generation_lock_path, timeout=60) # 增加超时以防死锁
+    def _parse_cron_expr(self, cron_expr: str):
+        """将标准 Cron 表达式解析为 apscheduler 需要的字典。"""
+        fields = cron_expr.split()
+        if len(fields) != 5:
+            raise ValueError("无效的 Cron 表达式，需要5个字段。")
+        return {
+            "minute": fields[0],
+            "hour": fields[1],
+            "day": fields[2],
+            "month": fields[3],
+            "day_of_week": fields[4],
+        }
+
+    async def _generate_and_render_report(self) -> str | None:
+        """核心业务逻辑：生成并渲染报告，返回图片路径。如果失败则返回 None。"""
+        generation_lock = FileLock(self.generation_lock_path, timeout=60)
         try:
             with generation_lock:
-                # 再次检查缓存，因为在等待锁的时候，可能已经有另一个实例生成了报告
                 if self.output_image_path.exists():
                     last_modified_time = datetime.fromtimestamp(self.output_image_path.stat().st_mtime)
                     if datetime.now() - last_modified_time < self.report_cache_duration:
-                        logger.info("报告在缓存有效期内（在获取锁后检查），直接返回现有报告图片。")
-                        yield event.image_result(str(self.output_image_path))
-                        return
-
-                yield event.plain_result("严肃学习中，少话...")
+                        logger.info("报告在缓存有效期内，直接返回现有报告。")
+                        return str(self.output_image_path)
 
                 issue_number = self._get_and_update_issue_number()
                 if issue_number == -1:
-                    yield event.plain_result("无法获取报告刊号，请稍后再试。")
-                    return
+                    logger.error("无法获取报告刊号，生成中止。")
+                    return None
 
                 await self._run_extraction()
-
                 articles = self._load_articles()
                 if not articles:
-                    yield event.plain_result("学习失败，已严肃反思")
-                    return
+                    logger.error("未能加载任何文章，生成中止。")
+                    return None
 
                 random.shuffle(articles)
                 selected_articles = articles[:10]
 
                 logger.info("--- 开始生成摘要 ---")
                 llm_semaphore = asyncio.Semaphore(self.max_llm_concurrency)
-                
-                # 实现RPM速率控制
                 rpm_limit = self.llm_rpm_limit
                 delay_between_requests = 60.0 / rpm_limit if rpm_limit > 0 else 0
-
                 summary_tasks = []
                 for article in selected_articles:
                     summary_tasks.append(asyncio.create_task(self._summary_wrapper(article, llm_semaphore)))
                     if delay_between_requests > 0:
                         await asyncio.sleep(delay_between_requests)
-                
                 await asyncio.gather(*summary_tasks)
                 logger.info("--- 摘要生成完毕 ---")
 
@@ -206,32 +230,61 @@ class DailyReportPlugin(Star):
                 }
                 
                 template_path = Path(__file__).parent / "templates" / "report_template.html"
-                try:
-                    with open(template_path, "r", encoding="utf-8") as f:
-                        template_content = f.read()
+                with open(template_path, "r", encoding="utf-8") as f:
+                    template_content = f.read()
 
-                    image_path_str = await self.html_render(
-                        tmpl=template_content,
-                        data=render_data,
-                        return_url=False,
-                        options={"type": "jpeg", "full_page": True, "quality": 90}
-                    )
-                    
-                    image_path = Path(image_path_str)
-                    if self.output_image_path.exists():
-                        self.output_image_path.unlink()
-                    image_path.rename(self.output_image_path)
+                image_path_str = await self.html_render(
+                    tmpl=template_content, data=render_data, return_url=False,
+                    options={"type": "jpeg", "full_page": True, "quality": 90}
+                )
+                
+                image_path = Path(image_path_str)
+                if self.output_image_path.exists():
+                    self.output_image_path.unlink()
+                image_path.rename(self.output_image_path)
+                
+                logger.info(f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}")
+                return str(self.output_image_path)
 
-                    yield event.image_result(str(self.output_image_path))
-                    yield event.plain_result("已严肃学习")
-                    logger.info(f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}")
-
-                except Exception as e:
-                    logger.error(f"渲染日报图片时出错: {e}", exc_info=True)
-                    yield event.plain_result("渲染失败，已严肃反思")
         except Timeout:
             logger.warning("已有另一个报告生成任务正在进行中，本次请求已跳过。")
-            yield event.plain_result("请勿重复生成，已有任务在后台执行。")
+            return None
+        except Exception as e:
+            logger.error(f"生成或渲染报告时发生未知错误: {e}", exc_info=True)
+            return None
+
+    async def _send_report(self, target_umo: str, report_path: str):
+        """向指定目标发送报告图片。"""
+        try:
+            chain = MessageChain(chain=[Comp.Image(file=report_path)])
+            await self.context.send_message(target_umo, chain)
+            logger.info(f"报告已发送至 {target_umo}")
+        except Exception as e:
+            logger.error(f"向 {target_umo} 发送报告失败: {e}", exc_info=True)
+
+    async def _scheduled_report_job(self):
+        """由调度器调用的定时任务。"""
+        logger.info("--- 定时报告任务启动 ---")
+        report_path = await self._generate_and_render_report()
+        if report_path:
+            targets = self.config.get("schedule_targets", [])
+            for target_umo in targets:
+                await self._send_report(target_umo, report_path)
+        logger.info("--- 定时报告任务结束 ---")
+
+    @filter.command("今日顶会")
+    async def generate_report_command(self, event: AstrMessageEvent):
+        """手动触发生成AI日报。"""
+        yield event.plain_result("严肃学习中文顶会中，少话...")
+        report_path = await self._generate_and_render_report()
+        if report_path:
+            await self._send_report(event.unified_msg_origin, report_path)
+            yield event.plain_result("日报生成完毕，亿万青年必须学习AI")
+        else:
+            yield event.plain_result("日报生成失败，已严肃反思")
 
     async def terminate(self):
-        pass
+        """插件终止时关闭调度器。"""
+        if self.scheduler.running:
+            self.scheduler.shutdown()
+            logger.info("日报插件调度器已关闭。")

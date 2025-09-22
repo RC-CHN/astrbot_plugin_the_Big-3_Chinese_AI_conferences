@@ -18,5 +18,20 @@
         "description": "调用大模型生成摘要时的每分钟请求数限制（RPM）。设为0表示不限制。",
         "type": "int",
         "default": 60
+    },
+    "schedule_enabled": {
+      "description": "是否开启定时自动生成并发送日报。",
+      "type": "bool",
+      "default": false
+    },
+    "schedule_cron": {
+      "description": "定时报告 CRON 表达式，格式为 '分 时 日 月 周'，例如 '0 12 * * *' 表示每天中午12点。",
+      "type": "string",
+      "default": "0 12 * * *"
+    },
+    "schedule_targets": {
+      "description": "一个包含接收日报的 unified_msg_origin 的列表。",
+      "type": "list",
+      "default": []
     }
 }

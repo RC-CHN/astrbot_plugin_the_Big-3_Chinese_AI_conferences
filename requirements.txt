@@ -3,3 +3,4 @@ trafilatura
 feedparser
 httpx
 filelock
+apscheduler

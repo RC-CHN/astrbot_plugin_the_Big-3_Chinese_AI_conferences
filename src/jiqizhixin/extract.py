@@ -1,5 +1,6 @@
 import httpx
 import json
+import hashlib
 from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 import trafilatura
@@ -90,6 +91,7 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
 
         for i, article in enumerate(formatted_articles):
             article["content"] = contents[i]
+            article["id"] = hashlib.md5(article["url"].encode("utf-8")).hexdigest()[:5]
         
         with open(cache_file, 'w', encoding='utf-8') as f:
             cache_content = {

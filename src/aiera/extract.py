@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 import trafilatura
@@ -101,6 +102,7 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
         
         for i, article in enumerate(articles):
             article["content"] = contents[i]
+            article["id"] = hashlib.md5(article["url"].encode("utf-8")).hexdigest()[:8]
             
     except Exception as e:
         logger.error(f"AIERA: Playwright抓取失败", exc_info=e)

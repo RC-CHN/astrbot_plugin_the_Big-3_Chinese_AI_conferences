@@ -1,5 +1,6 @@
 import json
 import random
+import shutil
 from datetime import datetime, timedelta
 import asyncio
 from pathlib import Path
@@ -33,6 +34,7 @@ class DailyReportPlugin(Star):
         self.report_meta_lock_path = self.plugin_data_dir / "report_meta.json.lock"
         self.generation_lock_path = self.plugin_data_dir / "generation.lock"
         self.output_image_path = self.plugin_data_dir / "daily_report.jpeg"
+        self.deep_read_cache_dir = self.plugin_data_dir / "deep_read_cache"
         
         self.extractors = {
             "AIERA": aiera_extract,
@@ -56,6 +58,8 @@ class DailyReportPlugin(Star):
 
     async def initialize(self):
         """初始化插件，设置并启动定时任务。"""
+        self.deep_read_cache_dir.mkdir(parents=True, exist_ok=True)
+        
         if self.config.get("schedule_enabled"):
             cron_expr = self.config.get("schedule_cron", "0 9 * * *")
             targets = self.config.get("schedule_targets", [])
@@ -98,8 +102,12 @@ class DailyReportPlugin(Star):
 
 
     async def _run_extraction(self):
-        """运行所有数据提取过程，并传递缓存路径。"""
-        logger.info("--- 启动数据提取 ---")
+        """运行所有数据提取过程，并清空旧的精读缓存。"""
+        logger.info("--- 启动数据提取，并清空精读缓存 ---")
+        if self.deep_read_cache_dir.exists():
+            shutil.rmtree(self.deep_read_cache_dir)
+        self.deep_read_cache_dir.mkdir(parents=True, exist_ok=True)
+
         semaphore = asyncio.Semaphore(self.max_fetch_concurrency)
         tasks = []
         for name, module in self.extractors.items():
@@ -282,6 +290,116 @@ class DailyReportPlugin(Star):
             yield event.plain_result("日报生成完毕，亿万青年必须学习AI")
         else:
             yield event.plain_result("日报生成失败，已严肃反思")
+
+    def _find_article_by_id(self, article_id: str) -> dict | None:
+        """根据文章ID在所有缓存中查找文章。"""
+        for name in self.extractors:
+            cache_dir = self.plugin_data_dir / f"{name.lower()}_cache"
+            article_path = cache_dir / "articles.json"
+            if not article_path.exists():
+                continue
+            try:
+                with open(article_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for article in data.get("articles", []):
+                        if article.get("id") == article_id:
+                            article['source'] = name  # 补充来源字段
+                            return article
+            except (json.JSONDecodeError, FileNotFoundError):
+                continue
+        return None
+
+    async def _get_deep_interpretation(self, content: str) -> str | None:
+        """调用大模型对文章进行详细解读。"""
+        if not content:
+            return "文章内容为空，无法进行精读。"
+
+        provider_id = self.config.get("summary_provider")
+        if not provider_id:
+            logger.warning("精读功能未配置 Provider，请在插件设置中指定。")
+            return "精读功能未配置 Provider。"
+
+        provider = self.context.get_provider_by_id(provider_id)
+        if not provider:
+            logger.error(f"无法找到 ID 为 '{provider_id}' 的 Provider 实例。")
+            return f"无法找到 Provider '{provider_id}'。"
+
+        try:
+            prompt = f"""请作为一名资深的AI领域分析师，对以下文章进行深入、详细的解读。请用清晰的结构、专业的视角，分析其核心观点、技术创新、潜在影响和未来展望。请直接输出解读内容，无需任何引言或客套话。
+
+文章内容：
+---
+{content}
+---
+详细解读："""
+            llm_resp = await provider.text_chat(prompt=prompt, long_text_mode=True)
+            
+            if llm_resp and llm_resp.completion_text:
+                return llm_resp.completion_text.strip()
+            else:
+                logger.warning("精读时出错：模型未返回有效内容。")
+                return "精读时出错：模型未返回有效内容。"
+        except Exception as e:
+            logger.error(f"调用 Provider '{provider_id}' 进行精读时出错: {e}", exc_info=True)
+            return "调用精读模型时出错。"
+
+    @filter.command("顶会精读")
+    async def deep_read_command(self, event: AstrMessageEvent, article_id: str):
+        """根据文章ID进行详细解读，并实现持久化缓存。"""
+        article = self._find_article_by_id(article_id)
+        if not article:
+            yield event.plain_result(f"找不到ID为 '{article_id}' 的文章，请检查ID是否正确，或等待缓存刷新。")
+            return
+
+        cached_image_path = self.deep_read_cache_dir / f"{article_id}.jpeg"
+
+        if cached_image_path.exists():
+            logger.info(f"精读报告 (ID: {article_id}) 命中缓存，直接发送。")
+            yield event.image_result(str(cached_image_path))
+            yield event.plain_result(f"原文链接：{article['url']}")
+            return
+
+        yield event.plain_result(f"深入精读{article_id}中，隐忍...")
+        
+        interpretation = await self._get_deep_interpretation(article.get("content", ""))
+        if not interpretation or "出错" in interpretation or "无法" in interpretation:
+            yield event.plain_result(f"对文章 '{article['title']}' 的精读失败：{interpretation}")
+            return
+
+        render_data = {
+            "article": article,
+            "interpretation": interpretation
+        }
+
+        template_path = Path(__file__).parent / "templates" / "deep_read_template.html"
+        try:
+            # html_render 返回的是一个临时路径
+            with open(template_path, "r", encoding="utf-8") as f:
+                template_content = f.read()
+
+            temp_image_path_str = await self.html_render(
+                tmpl=template_content,
+                data=render_data,
+                return_url=False,
+                options={"type": "jpeg", "full_page": True, "quality": 90}
+            )
+            
+            # 将临时文件移动到我们的持久化缓存目录
+            temp_image_path = Path(temp_image_path_str)
+            temp_image_path.rename(cached_image_path)
+            logger.info(f"新的精读报告已生成并缓存至：{cached_image_path}")
+
+            # 确保文件已成功移动到缓存位置后再发送
+            if cached_image_path.exists():
+                yield event.image_result(str(cached_image_path))
+                yield event.plain_result(f"原文链接：{article['url']}")
+            else:
+                logger.error(f"文件移动失败，无法在缓存位置找到文件：{cached_image_path}")
+                yield event.plain_result("处理精读报告时发生文件错误，请稍后再试。")
+
+        except Exception as e:
+            logger.error(f"渲染或保存精读报告时出错: {e}", exc_info=True)
+            yield event.plain_result("渲染精读报告失败，请检查日志。")
 
     async def terminate(self):
         """插件终止时关闭调度器。"""

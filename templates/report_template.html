@@ -118,6 +118,7 @@
                 <h2><a href="{{ article.url }}" target="_blank">{{ article.title }}</a></h2>
                 <p class="source">来源: {{ article.source.capitalize() }}</p>
                 <p class="summary">{{ article.summary }}</p>
+                <p style="font-size: 0.7em; color: #888; text-align: right; margin: 5px 0 0 0;">ID: {{ article.id }}</p>
             </div>
             {% endfor %}
         </div>
@@ -127,6 +128,7 @@
                 <h2><a href="{{ article.url }}" target="_blank">{{ article.title }}</a></h2>
                 <p class="source">来源: {{ article.source.capitalize() }}</p>
                 <p class="summary">{{ article.summary }}</p>
+                <p style="font-size: 0.7em; color: #888; text-align: right; margin: 5px 0 0 0;">ID: {{ article.id }}</p>
             </div>
             {% endfor %}
         </main>

@@ -2,7 +2,8 @@
     "summary_provider": {
         "description": "总结及处理使用的llm供应商名称",
         "type": "string",
-        "default": "openai"
+        "default": "openai",
+        "_special": "select_provider"
     },
     "max_fetch_concurrency": {
         "description": "抓取文章时的最大并发数",

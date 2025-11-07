@@ -56,7 +56,7 @@
             <p class="source">来源: {{ article.source.capitalize() }}</p>
         </header>
         <main class="content">
-            <p>{{ interpretation }}</p>
+            {{ interpretation | safe }}
         </main>
     </div>
 </body>

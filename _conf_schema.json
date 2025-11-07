@@ -16,7 +16,8 @@
         "default": 5
     },
     "llm_rpm_limit": {
-        "description": "调用大模型生成摘要时的每分钟请求数限制（RPM）。设为0表示不限制。",
+        "description": "调用大模型生成摘要时的每分钟请求数限制（RPM）。",
+        "hint":"设为0表示不限制。",
         "type": "int",
         "default": 60
     },
@@ -26,7 +27,8 @@
       "default": false
     },
     "schedule_cron": {
-      "description": "定时报告 CRON 表达式，格式为 '分 时 日 月 周'，例如 '0 12 * * *' 表示每天中午12点。",
+      "description": "定时报告 CRON 表达式。",
+      "hint": "格式为 '分 时 日 月 周'，例如 '0 12 * * *' 表示每天中午12点。",
       "type": "string",
       "default": "0 12 * * *"
     },

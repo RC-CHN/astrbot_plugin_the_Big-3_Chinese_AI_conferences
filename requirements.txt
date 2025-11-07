@@ -4,3 +4,4 @@ feedparser
 httpx
 filelock
 apscheduler
+markdown

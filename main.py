@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import asyncio
 from pathlib import Path
 from filelock import FileLock, Timeout
+import markdown
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -361,14 +362,17 @@ class DailyReportPlugin(Star):
 
         yield event.plain_result(f"深入精读{article_id}中，隐忍...")
         
-        interpretation = await self._get_deep_interpretation(article.get("content", ""))
-        if not interpretation or "出错" in interpretation or "无法" in interpretation:
-            yield event.plain_result(f"对文章 '{article['title']}' 的精读失败：{interpretation}")
+        interpretation_text = await self._get_deep_interpretation(article.get("content", ""))
+        if not interpretation_text or "出错" in interpretation_text or "无法" in interpretation_text:
+            yield event.plain_result(f"对文章 '{article['title']}' 的精读失败：{interpretation_text}")
             return
+
+        # 将 Markdown 格式的解读内容转换为 HTML
+        interpretation_html = markdown.markdown(interpretation_text)
 
         render_data = {
             "article": article,
-            "interpretation": interpretation
+            "interpretation": interpretation_html
         }
 
         template_path = Path(__file__).parent / "templates" / "deep_read_template.html"

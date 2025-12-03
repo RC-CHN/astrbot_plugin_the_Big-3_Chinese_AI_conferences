@@ -9,19 +9,22 @@ from pathlib import Path
 
 CACHE_DURATION = timedelta(hours=3)
 
-async def get_full_content(url: str, browser, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop) -> str:
+
+async def get_full_content(
+    url: str, browser, semaphore: asyncio.Semaphore, loop: asyncio.AbstractEventLoop
+) -> str:
     """使用共享的浏览器实例并发获取文章全文。"""
     async with semaphore:
         context = None
         try:
             context = await browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
             )
             page = await context.new_page()
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(2000)
             html = await page.content()
-            
+
             content = await loop.run_in_executor(None, trafilatura.extract, html)
             return content if content else ""
         except Exception as e:
@@ -31,13 +34,16 @@ async def get_full_content(url: str, browser, semaphore: asyncio.Semaphore, loop
             if context:
                 await context.close()
 
-async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = None, cache_dir: Path = None) -> list:
+
+async def fetch_latest_articles(
+    limit: int = 10, semaphore: asyncio.Semaphore = None, cache_dir: Path = None
+) -> list:
     """
     Fetches the latest articles from AIERA using Playwright.
     """
     if not cache_dir:
         raise ValueError("cache_dir must be provided.")
-        
+
     cache_file = cache_dir / "articles.json"
 
     if not cache_dir.exists():
@@ -45,30 +51,32 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
 
     if cache_file.exists():
         try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
+            with open(cache_file, "r", encoding="utf-8") as f:
                 cached_data = json.load(f)
-            
-            last_fetched_time = datetime.fromisoformat(cached_data.get('timestamp'))
+
+            last_fetched_time = datetime.fromisoformat(cached_data.get("timestamp"))
             if datetime.now() - last_fetched_time < CACHE_DURATION:
                 logger.info("AIERA: 从缓存加载文章。")
-                return cached_data.get('articles', [])[:limit]
+                return cached_data.get("articles", [])[:limit]
         except (json.JSONDecodeError, KeyError, FileNotFoundError):
             pass
 
     logger.info("AIERA: 从网络抓取文章。")
-    
+
     articles = []
-    
+
     browser = None
     p = None
     try:
         p = await async_playwright().start()
         browser = await p.chromium.launch()
         page = await browser.new_page()
-        await page.goto("https://aiera.com.cn/", wait_until='domcontentloaded')
-        
-        locators = await page.locator('article a, .post-title a, .entry-title a, h2 a, h3 a').all()
-        
+        await page.goto("https://aiera.com.cn/", wait_until="domcontentloaded")
+
+        locators = await page.locator(
+            "article a, .post-title a, .entry-title a, h2 a, h3 a"
+        ).all()
+
         fetched_urls = set()
         tasks = []
         loop = asyncio.get_running_loop()
@@ -76,34 +84,30 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
         for loc in locators:
             if len(fetched_urls) >= limit:
                 break
-            
+
             title = (await loc.inner_text()).strip()
-            url = await loc.get_attribute('href')
-            
+            url = await loc.get_attribute("href")
+
             if not url or not title:
                 continue
 
-            if not url.startswith('http'):
+            if not url.startswith("http"):
                 url = f"https://aiera.com.cn{url}"
-            
+
             if url in fetched_urls:
                 continue
-            
+
             fetched_urls.add(url)
             logger.info(f"AIERA: 正在准备抓取: {title}")
             task = asyncio.create_task(get_full_content(url, browser, semaphore, loop))
-            articles.append({
-                "title": title,
-                "url": url,
-                "task": task
-            })
+            articles.append({"title": title, "url": url, "task": task})
 
         contents = await asyncio.gather(*(article.pop("task") for article in articles))
-        
+
         for i, article in enumerate(articles):
             article["content"] = contents[i]
             article["id"] = hashlib.md5(article["url"].encode("utf-8")).hexdigest()[:5]
-            
+
     except Exception as e:
         logger.error(f"AIERA: Playwright抓取失败", exc_info=e)
     finally:
@@ -111,12 +115,9 @@ async def fetch_latest_articles(limit: int = 10, semaphore: asyncio.Semaphore = 
             await browser.close()
         if p:
             await p.stop()
-    
-    with open(cache_file, 'w', encoding='utf-8') as f:
-        cache_content = {
-            'timestamp': datetime.now().isoformat(),
-            'articles': articles
-        }
+
+    with open(cache_file, "w", encoding="utf-8") as f:
+        cache_content = {"timestamp": datetime.now().isoformat(), "articles": articles}
         json.dump(cache_content, f, ensure_ascii=False, indent=4)
 
     return articles[:limit]

@@ -23,58 +23,69 @@ from .src.jiqizhixin import extract as jiqizhixin_extract
 from .src.qbitai import extract as qbitai_extract
 
 
-@register("astrbot_plugin_the_Big-3_Chinese_AI_conferences", "RC-CHN", "亿万人将要精读中文AI顶会", "v1.2")
+@register(
+    "astrbot_plugin_the_Big-3_Chinese_AI_conferences",
+    "RC-CHN",
+    "亿万人将要精读中文AI顶会",
+    "v1.3",
+)
 class DailyReportPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.context = context
         self.config = config
-        
+
         self.plugin_data_dir: Path = StarTools.get_data_dir()
         self.report_meta_path = self.plugin_data_dir / "report_meta.json"
         self.report_meta_lock_path = self.plugin_data_dir / "report_meta.json.lock"
         self.generation_lock_path = self.plugin_data_dir / "generation.lock"
         self.output_image_path = self.plugin_data_dir / "daily_report.jpeg"
         self.deep_read_cache_dir = self.plugin_data_dir / "deep_read_cache"
-        
+
         self.extractors = {
             "AIERA": aiera_extract,
             "Jiqizhixin": jiqizhixin_extract,
-            "QbitAI": qbitai_extract
+            "QbitAI": qbitai_extract,
         }
-        
+
         self.max_fetch_concurrency = self.config.get("max_fetch_concurrency", 3)
         self.max_llm_concurrency = self.config.get("max_llm_concurrency", 5)
         self.llm_rpm_limit = self.config.get("llm_rpm_limit", 60)
         self.report_cache_duration = timedelta(hours=3)
-        self.scheduler = AsyncIOScheduler(timezone=self.context.get_config().get("timezone", "Asia/Shanghai"))
+        self.scheduler = AsyncIOScheduler(
+            timezone=self.context.get_config().get("timezone", "Asia/Shanghai")
+        )
         self.WEATHERS = [
             ("Network Congestion", "⦙"),
             ("Cosmic Ray Interference", "☄"),
             ("Data Stream Fluctuation", "〰"),
             ("Server Maintenance", "⚙"),
             ("AI in Deep Thought", "⌬"),
-            ("Quantum Entanglement", "⌬")
+            ("Quantum Entanglement", "⌬"),
         ]
 
     async def initialize(self):
         """初始化插件，设置并启动定时任务。"""
         self.deep_read_cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         if self.config.get("schedule_enabled"):
             cron_expr = self.config.get("schedule_cron", "0 9 * * *")
             targets = self.config.get("schedule_targets", [])
             if not targets:
-                logger.warning("定时报告已启用，但未配置任何接收者 (schedule_targets)，任务不会运行。")
+                logger.warning(
+                    "定时报告已启用，但未配置任何接收者 (schedule_targets)，任务不会运行。"
+                )
                 return
 
-            logger.info(f"定时报告任务已启用，Cron: '{cron_expr}'，将发送至 {len(targets)} 个目标。")
+            logger.info(
+                f"定时报告任务已启用，Cron: '{cron_expr}'，将发送至 {len(targets)} 个目标。"
+            )
             self.scheduler.add_job(
                 self._scheduled_report_job,
                 "cron",
                 **self._parse_cron_expr(cron_expr),
                 id="daily_report_job",
-                misfire_grace_time=300 # 5分钟宽限期
+                misfire_grace_time=300,  # 5分钟宽限期
             )
             self.scheduler.start()
 
@@ -91,16 +102,17 @@ class DailyReportPlugin(Star):
                             issue_number = meta_data.get("issue_number", 0) + 1
                     except (json.JSONDecodeError, FileNotFoundError):
                         issue_number = 1
-                
+
                 with open(self.report_meta_path, "w", encoding="utf-8") as f:
-                    json.dump({"issue_number": issue_number}, f, ensure_ascii=False, indent=4)
-                    
+                    json.dump(
+                        {"issue_number": issue_number}, f, ensure_ascii=False, indent=4
+                    )
+
                 return issue_number
         except Timeout:
             logger.error("获取报告刊号锁超时，可能存在并发问题。")
             # 在超时的情况下返回一个临时的或默认的值
             return -1
-
 
     async def _run_extraction(self):
         """运行所有数据提取过程，并清空旧的精读缓存。"""
@@ -114,11 +126,14 @@ class DailyReportPlugin(Star):
         for name, module in self.extractors.items():
             logger.info(f"正在准备从 {name} 获取...")
             cache_dir = self.plugin_data_dir / f"{name.lower()}_cache"
-            tasks.append(asyncio.create_task(module.fetch_latest_articles(
-                semaphore=semaphore, 
-                cache_dir=cache_dir
-            )))
-        
+            tasks.append(
+                asyncio.create_task(
+                    module.fetch_latest_articles(
+                        semaphore=semaphore, cache_dir=cache_dir
+                    )
+                )
+            )
+
         await asyncio.gather(*tasks)
         logger.info("--- 数据提取完成 ---")
 
@@ -141,20 +156,22 @@ class DailyReportPlugin(Star):
             try:
                 prompt = f"请将以下文章内容总结为一段精炼的中文摘要，直接给出摘要，不要包含任何引言或结束语,大约三十字左右。\n文章内容：\n---\n{content}\n---\n摘要："
                 llm_resp = await provider.text_chat(prompt=prompt)
-                
+
                 if llm_resp and llm_resp.completion_text:
                     return llm_resp.completion_text.strip()
                 else:
                     logger.warning("生成摘要时出错：模型未返回有效内容。")
                     return "生成摘要时出错：模型未返回有效内容。"
             except Exception as e:
-                logger.error(f"调用 Provider '{provider_id}' 时出错: {e}", exc_info=True)
+                logger.error(
+                    f"调用 Provider '{provider_id}' 时出错: {e}", exc_info=True
+                )
                 return "生成摘要时出错。"
 
     async def _summary_wrapper(self, article: dict, semaphore: asyncio.Semaphore):
         """为单个文章生成摘要、附加结果并实时记录日志的包装器。"""
-        summary = await self._get_summary(article.get('content', ''), semaphore)
-        article['summary'] = summary
+        summary = await self._get_summary(article.get("content", ""), semaphore)
+        article["summary"] = summary
         if "出错" in summary or "无法" in summary:
             logger.warning(f"总结失败: {article['title']} - {summary}")
         else:
@@ -170,7 +187,7 @@ class DailyReportPlugin(Star):
                 with open(article_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for article in data.get("articles", []):
-                        article['source'] = name  # 直接使用字典的键作为来源
+                        article["source"] = name  # 直接使用字典的键作为来源
                         all_articles.append(article)
             except FileNotFoundError:
                 logger.warning(f"未找到文章缓存文件: {article_path}")
@@ -197,7 +214,9 @@ class DailyReportPlugin(Star):
         try:
             with generation_lock:
                 if self.output_image_path.exists():
-                    last_modified_time = datetime.fromtimestamp(self.output_image_path.stat().st_mtime)
+                    last_modified_time = datetime.fromtimestamp(
+                        self.output_image_path.stat().st_mtime
+                    )
                     if datetime.now() - last_modified_time < self.report_cache_duration:
                         logger.info("报告在缓存有效期内，直接返回现有报告。")
                         return str(self.output_image_path)
@@ -222,7 +241,11 @@ class DailyReportPlugin(Star):
                 delay_between_requests = 60.0 / rpm_limit if rpm_limit > 0 else 0
                 summary_tasks = []
                 for article in selected_articles:
-                    summary_tasks.append(asyncio.create_task(self._summary_wrapper(article, llm_semaphore)))
+                    summary_tasks.append(
+                        asyncio.create_task(
+                            self._summary_wrapper(article, llm_semaphore)
+                        )
+                    )
                     if delay_between_requests > 0:
                         await asyncio.sleep(delay_between_requests)
                 await asyncio.gather(*summary_tasks)
@@ -235,24 +258,30 @@ class DailyReportPlugin(Star):
                     "issue_number": issue_number,
                     "date": datetime.now().strftime("%A, %B %d, %Y"),
                     "weather_text": weather_text,
-                    "weather_icon": weather_icon
+                    "weather_icon": weather_icon,
                 }
-                
-                template_path = Path(__file__).parent / "templates" / "report_template.html"
+
+                template_path = (
+                    Path(__file__).parent / "templates" / "report_template.html"
+                )
                 with open(template_path, "r", encoding="utf-8") as f:
                     template_content = f.read()
 
                 image_path_str = await self.html_render(
-                    tmpl=template_content, data=render_data, return_url=False,
-                    options={"type": "jpeg", "full_page": True, "quality": 90}
+                    tmpl=template_content,
+                    data=render_data,
+                    return_url=False,
+                    options={"type": "jpeg", "full_page": True, "quality": 90},
                 )
-                
+
                 image_path = Path(image_path_str)
                 if self.output_image_path.exists():
                     self.output_image_path.unlink()
                 image_path.rename(self.output_image_path)
-                
-                logger.info(f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}")
+
+                logger.info(
+                    f"新的日报已生成 (第 {issue_number} 期)：{self.output_image_path}"
+                )
                 return str(self.output_image_path)
 
         except Timeout:
@@ -304,7 +333,7 @@ class DailyReportPlugin(Star):
                     data = json.load(f)
                     for article in data.get("articles", []):
                         if article.get("id") == article_id:
-                            article['source'] = name  # 补充来源字段
+                            article["source"] = name  # 补充来源字段
                             return article
             except (json.JSONDecodeError, FileNotFoundError):
                 continue
@@ -334,14 +363,16 @@ class DailyReportPlugin(Star):
 ---
 详细解读："""
             llm_resp = await provider.text_chat(prompt=prompt, long_text_mode=True)
-            
+
             if llm_resp and llm_resp.completion_text:
                 return llm_resp.completion_text.strip()
             else:
                 logger.warning("精读时出错：模型未返回有效内容。")
                 return "精读时出错：模型未返回有效内容。"
         except Exception as e:
-            logger.error(f"调用 Provider '{provider_id}' 进行精读时出错: {e}", exc_info=True)
+            logger.error(
+                f"调用 Provider '{provider_id}' 进行精读时出错: {e}", exc_info=True
+            )
             return "调用精读模型时出错。"
 
     @filter.command("顶会精读")
@@ -349,7 +380,9 @@ class DailyReportPlugin(Star):
         """根据文章ID进行详细解读，并实现持久化缓存。"""
         article = self._find_article_by_id(article_id)
         if not article:
-            yield event.plain_result(f"找不到ID为 '{article_id}' 的文章，请检查ID是否正确，或等待缓存刷新。")
+            yield event.plain_result(
+                f"找不到ID为 '{article_id}' 的文章，请检查ID是否正确，或等待缓存刷新。"
+            )
             return
 
         cached_image_path = self.deep_read_cache_dir / f"{article_id}.jpeg"
@@ -361,19 +394,24 @@ class DailyReportPlugin(Star):
             return
 
         yield event.plain_result(f"深入精读{article_id}中，隐忍...")
-        
-        interpretation_text = await self._get_deep_interpretation(article.get("content", ""))
-        if not interpretation_text or "出错" in interpretation_text or "无法" in interpretation_text:
-            yield event.plain_result(f"对文章 '{article['title']}' 的精读失败：{interpretation_text}")
+
+        interpretation_text = await self._get_deep_interpretation(
+            article.get("content", "")
+        )
+        if (
+            not interpretation_text
+            or "出错" in interpretation_text
+            or "无法" in interpretation_text
+        ):
+            yield event.plain_result(
+                f"对文章 '{article['title']}' 的精读失败：{interpretation_text}"
+            )
             return
 
         # 将 Markdown 格式的解读内容转换为 HTML
         interpretation_html = markdown.markdown(interpretation_text)
 
-        render_data = {
-            "article": article,
-            "interpretation": interpretation_html
-        }
+        render_data = {"article": article, "interpretation": interpretation_html}
 
         template_path = Path(__file__).parent / "templates" / "deep_read_template.html"
         try:
@@ -385,9 +423,9 @@ class DailyReportPlugin(Star):
                 tmpl=template_content,
                 data=render_data,
                 return_url=False,
-                options={"type": "jpeg", "full_page": True, "quality": 90}
+                options={"type": "jpeg", "full_page": True, "quality": 90},
             )
-            
+
             # 将临时文件移动到我们的持久化缓存目录
             temp_image_path = Path(temp_image_path_str)
             temp_image_path.rename(cached_image_path)
@@ -398,7 +436,9 @@ class DailyReportPlugin(Star):
                 yield event.image_result(str(cached_image_path))
                 yield event.plain_result(f"原文链接：{article['url']}")
             else:
-                logger.error(f"文件移动失败，无法在缓存位置找到文件：{cached_image_path}")
+                logger.error(
+                    f"文件移动失败，无法在缓存位置找到文件：{cached_image_path}"
+                )
                 yield event.plain_result("处理精读报告时发生文件错误，请稍后再试。")
 
         except Exception as e:
